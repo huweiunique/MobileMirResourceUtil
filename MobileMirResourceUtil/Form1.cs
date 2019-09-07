@@ -22,12 +22,10 @@ namespace MobileMirResourceUtil
 
         private async void BtnDePackage_Click(object sender, EventArgs e)
         {
+            if (openFileDialog1.ShowDialog() != DialogResult.OK)
+                return;
             try
             {
-                //Test();
-                //return; ;
-                if (openFileDialog1.ShowDialog() != DialogResult.OK)
-                    return;
                 this.btnDePackage.Enabled = false;
                 Stopwatch stopwatch = Stopwatch.StartNew();
                 ResourceInfo resource = new ResourceInfo();
@@ -40,30 +38,34 @@ namespace MobileMirResourceUtil
             {
                 MessageBox.Show(ex.Message);
             }
+            finally
+            {
+                this.btnDePackage.Enabled = true;
+            }
         }
 
-        private void Test()
+        private async void BtnPackage_Click(object sender, EventArgs e)
         {
-            this.btnDePackage.Enabled = false;
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            var result = Directory.GetFiles(@"C:\Users\huwei\Desktop\data资源文件\rs").AsParallel().Select(file =>
+            if (folderBrowserDialog1.ShowDialog() != DialogResult.OK)
+                return;
+            try
             {
+                this.btnPackage.Enabled = false;
+                Stopwatch stopwatch = Stopwatch.StartNew();
                 ResourceInfo resource = new ResourceInfo();
-                resource.DePackageAsync(file).Wait();
-                return resource;
-            }).ToList();
-            StringBuilder sb = new StringBuilder();
-            foreach (var items in result.GroupBy(x => x.FileLengthOffset))
-            {
-                foreach (var dtlItems in items.GroupBy(x => x.ChildFiles[0].LastNineBytes[8]))
-                {
-                    sb.AppendLine($"最后一位为:{dtlItems.Key}的偏移量是:{items.Key},对应资源文件:{string.Join(",", dtlItems.Select(x => x.FileName))}");
-                }
-            }
+                await resource.PackageAsync(folderBrowserDialog1.SelectedPath);
+                stopwatch.Stop();
+                MessageBox.Show($"打包完成,耗时:{stopwatch.ElapsedMilliseconds}毫秒");
 
-            stopwatch.Stop();
-            MessageBox.Show($"解包完成,耗时:{stopwatch.ElapsedMilliseconds}毫秒,结果:{Environment.NewLine + sb.ToString()}");
-            this.btnDePackage.Enabled = true;
+            }
+            //catch (Exception ex)
+            //{
+            //    MessageBox.Show(ex.Message);
+            //}
+            finally
+            {
+                this.btnPackage.Enabled = true;
+            }
         }
     }
 }

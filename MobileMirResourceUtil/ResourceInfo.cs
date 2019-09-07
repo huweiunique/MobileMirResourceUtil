@@ -1,12 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Swifter.Json;
 
 namespace MobileMirResourceUtil
 {
@@ -15,15 +15,7 @@ namespace MobileMirResourceUtil
     /// </summary>
     public class ResourceInfo
     {
-        public string FileName { get; set; }
-        /// <summary>
-        /// 文件地址偏移量
-        /// </summary>
-        public int FileLengthOffset
-        {
-            get;
-            set;
-        }
+        public byte TypeCode { get; set; }
         public List<ChildFile> ChildFiles { get; private set; }
 
         public async Task DePackageAsync(string sourceFile)
@@ -36,7 +28,6 @@ namespace MobileMirResourceUtil
 
             最后一位为:0的偏移量是:0,后9位全是0,对应资源文件:mmap.zip,上一层目录的rs.zip
             */
-            this.FileName = Path.GetFileName(sourceFile);
             ChildFiles = new List<ChildFile>();
             using (var stream = CreateReadStream(sourceFile))
             {
@@ -75,17 +66,23 @@ namespace MobileMirResourceUtil
                     var childFile = new ChildFile()
                     {
                         FileName = fileName,
-                        LastNineBytes = otherParamArray,
                         Offset = offset,
-                        Length = length
+                        Length = length,
+                        X = BitConverter.ToInt16(otherParamArray, 0),
+                        Y = BitConverter.ToInt16(otherParamArray, 2),
+                        Width = BitConverter.ToInt16(otherParamArray, 4),
+                        Height = BitConverter.ToInt16(otherParamArray, 6),
+                        TypeCode = otherParamArray[8]
                     };
                     ChildFiles.Add(childFile);
                     //Console.WriteLine($"{offset}\t{length}");
                     //Console.WriteLine(childFile.ToString());
                 }
+
             }
-            //早期代码通过计算偏移量得到是否有17,后期分析后,发现最后9位的第9位对应的字节,如果是8就是偏移17,16和0都是偏移0,具体规则请看此方法的第一句注释
-            AutoCalcFileLengthOffset();
+
+            if (ChildFiles.Count > 0)
+                this.TypeCode = ChildFiles[0].TypeCode;
             SaveToFile(sourceFile);
         }
 
@@ -98,48 +95,99 @@ namespace MobileMirResourceUtil
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             //用共享方式多次打开文件流同时读取,以最快的方式解压
-            this.ChildFiles.AsParallel().ForAll(async file =>
-            {
-                using (var otherStream = CreateReadStream(sourceFile))
-                {
-                    await file.SaveToFileAsync(dir, otherStream, this.FileLengthOffset).ConfigureAwait(false);
-                }
-            });
-            WritePackageInfo(dir);
+            this.ChildFiles.AsParallel().ForAll(file =>
+           {
+               using (var otherStream = CreateReadStream(sourceFile))
+               {
+                   file.SaveToFileAsync(dir, otherStream).Wait();
+               }
+           });
+            this.WriteIniFile(GetIniPath(dir));
         }
 
-        private void WritePackageInfo(string dir)
+        private void WriteIniFile(string iniPath)
         {
-            string json = JsonFormatter.SerializeObject(this);
-            File.WriteAllText(Path.Combine(dir, "description.txt"), json, Encoding.UTF8);
+            File.WriteAllText(iniPath, $"类型={this.TypeCode}", Encoding.UTF8);
         }
 
-        private void AutoCalcFileLengthOffset()
+        private string GetIniPath(string dir)
         {
+            return Path.Combine(dir, "resource.description.ini");
+        }
+        private void ReadIniFile(string path)
+        {
+            this.TypeCode = byte.Parse(File.ReadAllLines(path, Encoding.UTF8)[0].Split('=')[1]);
+        }
 
-            //计算文件读取长度的偏移量,有的资源包偏移17,有的不偏移,这里智能判定
-            if (ChildFiles.Count > 2)
+        public async Task PackageAsync(string dir)
+        {
+            string iniPath = GetIniPath(dir);
+            if (!File.Exists(iniPath))
+                throw new FileNotFoundException("打包的文件夹必须是使用本软件解包的资源!");
+            ReadIniFile(iniPath);
+            this.ChildFiles = new List<ChildFile>();
+            //AsyncBinaryWriter Dispose时会关闭传入的流
+            using (var stream = File.Create(dir + ".zip"))
             {
-                if (!Calc(ChildFiles))
+                //写头
+                await stream.WriteAsync("www.sdo.com").ConfigureAwait(false);
+                await stream.WriteAsync(byte.MinValue).ConfigureAwait(false);
+                //写文件列表读取偏移量,先占位,后面写完后再修改
+                await stream.WriteAsync(0).ConfigureAwait(false);
+                foreach (var file in Directory.GetFiles(dir, "*.*", SearchOption.AllDirectories))
                 {
-                    //发现有时候读取出来的顺序对不上,则按地址排序
-                    Calc(ChildFiles.OrderBy(x => x.Offset).Take(2).ToArray());
-                }
-            }
+                    if (IsIniFile(file))
+                        continue;
+                    var childFile = new ChildFile()
+                    {
+                        FileName = file.Replace(dir + Path.DirectorySeparatorChar, string.Empty).Replace('\\', '/'),
+                        TypeCode = this.TypeCode,
+                        Offset = (int)stream.Length
+                    };
+                    //通过读取ini文件加载坐标
+                    childFile.ReadIni(file);
+                    using (var childStream = CreateReadStream(file))
+                    {
+                        childFile.Length = (int)childStream.Length + (this.TypeCode == 8 ? 17 : 0);
+                        //写入流
+                        await stream.WriteAsync(await childStream.ReadBytesAsync((int)childStream.Length).ConfigureAwait(false)).ConfigureAwait(false);
 
-            bool Calc(IList<ChildFile> array)
-            {
-                var temp = array[0].Length - (array[1].Offset - array[0].Offset);
-                //only accept 0 and 17
-                if (temp == 0 || temp == 17)
+                        //加载长宽
+                        if (this.TypeCode != 0)
+                        {
+                            using (Image image = Image.FromStream(childStream))
+                            {
+                                childFile.Width = (short)image.Width;
+                                childFile.Height = (short)image.Height;
+                            }
+                        }
+                    }
+                    this.ChildFiles.Add(childFile);
+                }
+                //从此地址开始写文件列表
+                int fileListoffset = (int)stream.Length;
+                //开始文件列表地址偏移量
+                stream.Seek(12, SeekOrigin.Begin);
+                //覆盖最早写的int值(4字节)
+                await stream.WriteAsync(fileListoffset).ConfigureAwait(false);
+                //开始写文件列表
+                stream.Seek(0, SeekOrigin.End);
+                //写文件数量
+                await stream.WriteAsync(this.ChildFiles.Count).ConfigureAwait(false);
+                foreach (var childFile in this.ChildFiles)
                 {
-                    this.FileLengthOffset = temp;
-                    return true;
+                    await childFile.WriteFileInfoAsync(stream).ConfigureAwait(false);
                 }
-
-                return false;
+                await stream.FlushAsync().ConfigureAwait(false);
             }
         }
+
+
+        private bool IsIniFile(string path)
+        {
+            return path.EndsWith(".description.ini", StringComparison.OrdinalIgnoreCase);
+        }
+
 
         private FileStream CreateReadStream(string path)
         {
@@ -153,7 +201,7 @@ namespace MobileMirResourceUtil
             int readLength = 12;
             int offset = 0;
             stream.Read(array, offset, readLength);
-            string header = Encoding.ASCII.GetString(array, offset, readLength);
+            string header = Encoding.UTF8.GetString(array, offset, readLength);
             return header.TrimEnd('\0') == "www.sdo.com";
         }
         private int GetPngNameListOffset(Stream stream)
@@ -168,31 +216,14 @@ namespace MobileMirResourceUtil
 
     public class ChildFile
     {
-        private byte[] _lastNineBytes;
-        public string FileName { get; set; }
+        internal string FileName { get; set; }
 
+        public short X { get; set; }
+        public short Y { get; set; }
+        internal short Width { get; set; }
+        internal short Height { get; set; }
+        internal byte TypeCode { get; set; }
 
-        /// <summary>
-        /// 最后9位参数记录的数据
-        /// </summary>
-        public byte[] LastNineBytes
-        {
-            get => _lastNineBytes;
-            set
-            {
-                _lastNineBytes = value;
-                SetLastByteDescription(_lastNineBytes);
-            }
-        }
-
-        private void SetLastByteDescription(byte[] lastNineBytes)
-        {
-            if (lastNineBytes == null || lastNineBytes.Length != 9)
-                return;
-            LastByteDescript =
-                $"坐标X:{BitConverter.ToInt16(lastNineBytes, 0)},坐标Y:{BitConverter.ToInt16(lastNineBytes, 2)},图片宽度:{BitConverter.ToInt16(lastNineBytes, 4)},高度:{BitConverter.ToInt16(lastNineBytes, 6)},最后一位(猜测是分类代码):{lastNineBytes[8]}";
-        }
-        public string LastByteDescript { get; set; }
         /// <summary>
         /// 偏移量
         /// </summary>
@@ -202,15 +233,40 @@ namespace MobileMirResourceUtil
         /// </summary>
         internal int Length { get; set; }
 
-        internal async Task SaveToFileAsync(string dir, Stream stream, int fileLengthOffset)
+        internal async Task SaveToFileAsync(string dir, Stream stream)
         {
-            var data = await ReadFromStreamAsync(stream, fileLengthOffset).ConfigureAwait(false);
+            var data = await ReadFromStreamAsync(stream).ConfigureAwait(false);
             await SaveFileAsync(dir, data).ConfigureAwait(false);
         }
 
-        private async Task<byte[]> ReadFromStreamAsync(Stream stream, int fileLengthOffset)
+        internal async Task WriteFileInfoAsync(Stream stream)
         {
-            var buffer = new byte[this.Length - fileLengthOffset];
+            //文件名长度
+            await stream.WriteAsync(this.FileName.Length).ConfigureAwait(false);
+            //文件名                
+            await stream.WriteAsync(this.FileName).ConfigureAwait(false);
+            //文件长度              
+            await stream.WriteAsync(this.Length).ConfigureAwait(false);
+            //文件地址              
+            await stream.WriteAsync(this.Offset).ConfigureAwait(false);
+            //x                     
+            await stream.WriteAsync(this.X).ConfigureAwait(false);
+            //y                     
+            await stream.WriteAsync(this.Y).ConfigureAwait(false);
+            //with                  
+            await stream.WriteAsync(this.Width).ConfigureAwait(false);
+            //height                
+            await stream.WriteAsync(this.Height).ConfigureAwait(false);
+            //typecode              
+            await stream.WriteAsync(this.TypeCode).ConfigureAwait(false);
+        }
+
+        private async Task<byte[]> ReadFromStreamAsync(Stream stream)
+        {
+            var realLength = this.Length;
+            if (this.TypeCode == 8)
+                realLength -= 17;
+            var buffer = new byte[realLength];
             stream.Seek(this.Offset, SeekOrigin.Begin);
             await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
             return buffer;
@@ -219,7 +275,8 @@ namespace MobileMirResourceUtil
         private async Task SaveFileAsync(string dir, byte[] data)
         {
             string path = Path.Combine(dir, this.FileName);
-            if (this.FileName.IndexOfAny(new[] { '/', '\\' }) != -1)
+            // 这里的路径分隔符是linux系统的,因为在安卓上运行
+            if (this.FileName.IndexOf('/') != -1)
             {
                 string childDir = Path.GetDirectoryName(path);
                 if (!Directory.Exists(childDir))
@@ -229,15 +286,57 @@ namespace MobileMirResourceUtil
             {
                 await stream.WriteAsync(data, 0, data.Length).ConfigureAwait(false);
             }
+
+            WriteFileInfo(path);
         }
 
         public override string ToString()
         {
+            return ToIniFormat();
+        }
+
+        private string ToIniFormat()
+        {
             StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"文件名:{FileName}");
-            sb.AppendLine($"后9位:{ BitConverter.ToString(LastNineBytes)}前4位:{BitConverter.ToUInt32(LastNineBytes, 0)},5-8位:{BitConverter.ToUInt32(LastNineBytes, 4)},9位:{LastNineBytes[8]}");
-            sb.AppendLine(($"后9位把第一位单独拿出来:{ BitConverter.ToString(LastNineBytes)}第一位:{LastNineBytes[0]},2-5位:{BitConverter.ToUInt32(LastNineBytes, 1)},6-9位:{BitConverter.ToUInt32(LastNineBytes, 5)}"));
+            sb.AppendLine($"X坐标={this.X}");
+            sb.AppendLine($"Y坐标={this.Y}");
             return sb.ToString();
+        }
+
+        private void FromIni(string iniPath)
+        {
+            if (!File.Exists(iniPath))
+                return;
+            Dictionary<string, string> dictionary = new Dictionary<string, string>();
+            foreach (var fileLine in File.ReadLines(iniPath, Encoding.UTF8))
+            {
+                var temp = fileLine.Split('=');
+                dictionary.Add(temp[0], temp[1]);
+            }
+            this.X = short.Parse(dictionary["X坐标"]);
+            this.Y = short.Parse(dictionary["Y坐标"]);
+        }
+
+        internal void ReadIni(string sourcePath)
+        {
+            FromIni(GetIniPath(sourcePath));
+        }
+
+        private void WriteFileInfo(string path)
+        {
+            //最后一位为:0的偏移量是:0,后9位全是0,对应资源文件:mmap.zip,上一层目录的rs.zip
+            //TypeCode==0的是rs.zip与mmap.zip,观测发现,后面9个字节全是0,所以没有必要写入,打开时也没有必要读取
+            if (this.TypeCode == 0)
+            {
+                return;
+            }
+
+            File.WriteAllText(GetIniPath(path), this.ToIniFormat(), Encoding.UTF8);
+        }
+
+        private string GetIniPath(string filePath)
+        {
+            return filePath + ".description.ini";
         }
     }
 

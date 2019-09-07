@@ -30,13 +30,15 @@
         {
             this.btnDePackage = new System.Windows.Forms.Button();
             this.openFileDialog1 = new System.Windows.Forms.OpenFileDialog();
+            this.btnPackage = new System.Windows.Forms.Button();
+            this.folderBrowserDialog1 = new System.Windows.Forms.FolderBrowserDialog();
             this.SuspendLayout();
             // 
             // btnDePackage
             // 
-            this.btnDePackage.Location = new System.Drawing.Point(12, 12);
+            this.btnDePackage.Location = new System.Drawing.Point(30, 12);
             this.btnDePackage.Name = "btnDePackage";
-            this.btnDePackage.Size = new System.Drawing.Size(75, 23);
+            this.btnDePackage.Size = new System.Drawing.Size(91, 66);
             this.btnDePackage.TabIndex = 0;
             this.btnDePackage.Text = "解包";
             this.btnDePackage.UseVisualStyleBackColor = true;
@@ -48,17 +50,30 @@
             this.openFileDialog1.Filter = "资源文件|*.zip";
             this.openFileDialog1.Title = "选择要解压的手游资源文件";
             // 
+            // btnPackage
+            // 
+            this.btnPackage.Location = new System.Drawing.Point(153, 12);
+            this.btnPackage.Name = "btnPackage";
+            this.btnPackage.Size = new System.Drawing.Size(85, 66);
+            this.btnPackage.TabIndex = 1;
+            this.btnPackage.Text = "打包";
+            this.btnPackage.UseVisualStyleBackColor = true;
+            this.btnPackage.Click += new System.EventHandler(this.BtnPackage_Click);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(651, 409);
+            this.ClientSize = new System.Drawing.Size(275, 92);
+            this.Controls.Add(this.btnPackage);
             this.Controls.Add(this.btnDePackage);
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
             this.Name = "Form1";
             this.ShowIcon = false;
-            this.Text = "资源打开解包";
+            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+            this.Text = "战神引擎手游资源工具";
             this.ResumeLayout(false);
 
         }
@@ -67,6 +82,8 @@
 
         private System.Windows.Forms.Button btnDePackage;
         private System.Windows.Forms.OpenFileDialog openFileDialog1;
+        private System.Windows.Forms.Button btnPackage;
+        private System.Windows.Forms.FolderBrowserDialog folderBrowserDialog1;
     }
 }
 
